@@ -30,7 +30,6 @@ N_MON_TOKENS = 12      # 6 ally + 6 opponent pokemon
 N_MOVE_TOKENS = 8      # 2 active slots × 4 moves
 N_TOKENS = N_MON_TOKENS + N_MOVE_TOKENS  # 20 total tokens
 
-# Input dimensions
 MON_INPUT_DIM = (
     1           # hp fraction
     + 18        # types
@@ -43,9 +42,10 @@ MON_INPUT_DIM = (
     + (N_ITEMS + 1)     # item one-hot
     + (N_TYPES + 1)     # tera type one-hot
     + 1         # is_terastallized
-)  # = 221
+    + 10        # immunity flags
+)  # = 231
 
-MOVE_INPUT_DIM = 28  
+MOVE_INPUT_DIM = 30 
 
 GLOBAL_STATE_DIM = (
     N_WEATHERS
@@ -95,7 +95,7 @@ class InputProjection(nn.Module):
         super().__init__()
 
         # Pokemon projection: 221 → d_model
-        self.mon_proj = nn.Sequential(
+        self.mon_proj = j = nn.Sequential(
             nn.Linear(MON_INPUT_DIM, d_model),
             nn.LayerNorm(d_model),
             nn.ReLU(),

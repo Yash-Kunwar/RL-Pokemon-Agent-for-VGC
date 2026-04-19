@@ -100,6 +100,13 @@ def get_action_mask(battle: DoubleBattle, slot: int) -> np.ndarray:
             mask[PASS_ACTION] = 1.0
         return mask
 
+    # Trapped — cannot switch out
+    is_trapped = False
+    try:
+        is_trapped = battle.trapped[slot]
+    except Exception:
+        pass
+
     available_moves = battle.available_moves[slot]
     available_move_ids = {m.id for m in available_moves}
 
@@ -132,29 +139,57 @@ def get_action_mask(battle: DoubleBattle, slot: int) -> np.ndarray:
         # Get valid showdown targets for this move
         valid_targets = battle.get_possible_showdown_targets(move, mon)
 
-        # opp1 target
-        if OPP1 in valid_targets and opp1_alive:
+        # Check type effectiveness for immune masking
+        opp1_mon = battle.opponent_active_pokemon[0]
+        opp2_mon = battle.opponent_active_pokemon[1]
+
+        opp1_multiplier = 0.0
+        opp2_multiplier = 0.0
+        try:
+            if opp1_mon and not opp1_mon.fainted:
+                opp1_multiplier = float(opp1_mon.damage_multiplier(move))
+        except Exception:
+            opp1_multiplier = 1.0
+        try:
+            if opp2_mon and not opp2_mon.fainted:
+                opp2_multiplier = float(opp2_mon.damage_multiplier(move))
+        except Exception:
+            opp2_multiplier = 1.0
+
+        # opp1 target — only if not immune and target is valid
+        if OPP1 in valid_targets and opp1_alive and opp1_multiplier > 0.0:
             mask[move_slot * N_TARGETS + 0] = 1.0
 
-        # opp2 target
-        if OPP2 in valid_targets and opp2_alive:
+        # opp2 target — only if not immune and target is valid
+        if OPP2 in valid_targets and opp2_alive and opp2_multiplier > 0.0:
             mask[move_slot * N_TARGETS + 1] = 1.0
 
-        # ally/self target
-        ally_target_valid = any(pos in valid_targets for pos in ALLY_POSITIONS)
+        # ally/self target — only allow for genuinely ally-targeting moves
+        # NORMAL and ANY moves should never target allies intentionally
+        from poke_env.battle.target import Target
+        ALLY_ONLY_TARGETS = {
+            Target.ADJACENT_ALLY,
+            Target.ADJACENT_ALLY_OR_SELF,
+            Target.ALLIES,
+            Target.ALLY_SIDE,
+            Target.ALLY_TEAM,
+            Target.SELF,
+        }
+        is_ally_only_move = move.target in ALLY_ONLY_TARGETS
         self_target_valid = EMPTY_TARGET in valid_targets
 
-        if ally_target_valid and ally_alive:
+        if is_ally_only_move and ally_alive:
             mask[move_slot * N_TARGETS + 2] = 1.0
         elif self_target_valid:
             mask[move_slot * N_TARGETS + 2] = 1.0
 
-    # Switch actions
-    switches = battle.available_switches[slot]
-    bench = _get_bench_pokemon(battle)
-    for i, bench_mon in enumerate(bench):
-        if bench_mon is not None and bench_mon in switches:
-            mask[SWITCH_ACTION_START + i] = 1.0
+    # Switch actions — not available if trapped
+    if not is_trapped:
+        switches = battle.available_switches[slot]
+        bench = _get_bench_pokemon(battle)
+        for i, bench_mon in enumerate(bench):
+            if bench_mon is not None and bench_mon in switches:
+                mask[SWITCH_ACTION_START + i] = 1.0
 
     # Struggle — valid when no moves available but can still act
     if not available_moves and not switches:

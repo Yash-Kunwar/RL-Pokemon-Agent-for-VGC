@@ -16,7 +16,7 @@ from src.data.replay_parser import (
     load_battles_from_file,
 )
 from src.utils.observation import (
-    POKEMON_TYPES, STATUSES, TRACKED_EFFECTS,
+    N_IMMUNITY_FLAGS, POKEMON_TYPES, STATUSES, TRACKED_EFFECTS,
     WEATHERS, TERRAINS, FIELDS, SIDE_CONDITIONS,
     BOOST_STATS, BASE_STATS, ITEM_LIST, ITEM_TO_IDX,
     N_TYPES, N_STATUSES, N_EFFECTS, N_WEATHERS,
@@ -70,7 +70,7 @@ def _encode_parsed_pokemon(
     hide_ability: bool = False,
 ) -> np.ndarray:
     """
-    Encode a PokemonState into the same 221-dim vector as _encode_pokemon()
+    Encode a PokemonState into the same 231-dim vector as _encode_pokemon()
     in observation.py.
 
     hide_item / hide_ability: set True for opponent's pokemon to simulate
@@ -80,8 +80,8 @@ def _encode_parsed_pokemon(
     tera_vec_size = N_TYPES + 1
     per_mon_size = (
         1 + N_TYPES + N_BASE_STATS + N_BOOSTS + N_STATUSES
-        + N_EFFECTS + 1 + 1 + item_vec_size + tera_vec_size + 1
-    )  # = 221
+        + N_EFFECTS + 1 + 1 + item_vec_size + tera_vec_size + 1 + N_IMMUNITY_FLAGS
+    ) 
 
     vec = np.zeros(per_mon_size, dtype=np.float32)
 
@@ -170,6 +170,12 @@ def _encode_parsed_pokemon(
     vec[idx] = 1.0 if state.is_terastallized else 0.0
     idx += 1
 
+    # immunity flags (10)
+    if mon_obj is not None:
+        from src.utils.observation import _get_immunity_flags
+        vec[idx:idx + N_IMMUNITY_FLAGS] = _get_immunity_flags(mon_obj)
+    idx += N_IMMUNITY_FLAGS
+
     return vec
 
 
@@ -183,7 +189,7 @@ def _encode_parsed_move(
     Encode a move by its ID string into the same 28-dim vector
     as _encode_move() in observation.py.
     """
-    vec = np.zeros(28, dtype=np.float32)
+    vec = np.zeros(30, dtype=np.float32)
 
     if move_id is None:
         return vec
@@ -237,6 +243,12 @@ def _encode_parsed_move(
 
     # Priority
     vec[idx] = move_obj.priority / 7.0
+    idx += 1
+
+    # Damage oracle placeholders — 1.0 neutral (full info not available at parse time)
+    vec[idx] = 0.25      # vs_opp1 normalized neutral
+    idx += 1
+    vec[idx] = 0.25      # vs_opp2 normalized neutral
     idx += 1
 
     return vec

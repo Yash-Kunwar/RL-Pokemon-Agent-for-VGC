@@ -189,6 +189,99 @@ N_MOVE_CATEGORIES = 3                 # physical, special, status
 
 ITEM_TO_IDX = {item: i for i, item in enumerate(ITEM_LIST)}
 
+# ─── Immunity and damage oracle helpers ───────────────────────────────────────
+
+# Type immunities from abilities and types
+# Maps (attacking_type_name) -> list of (ability_or_type) that grants immunity
+TYPE_IMMUNITY_MAP = {
+    'GROUND':   ['levitate', 'FLYING'],
+    'ELECTRIC': ['GROUND', 'voltabsorb', 'lightningrod', 'motordriveabiliy'],
+    'WATER':    ['waterabsorb', 'stormdrain', 'dryskin'],
+    'FIRE':     ['flashfire'],
+    'NORMAL':   ['GHOST'],
+    'FIGHTING': ['GHOST'],
+    'POISON':   ['STEEL'],
+    'GHOST':    ['NORMAL'],
+    'PSYCHIC':  ['DARK'],
+    'DRAGON':   ['FAIRY'],
+    'PRANKSTER_STATUS': ['DARK'],
+}
+
+IMMUNE_ABILITIES = {
+    'levitate':      'GROUND',
+    'voltabsorb':    'ELECTRIC',
+    'lightningrod':  'ELECTRIC',
+    'motordrive':    'ELECTRIC',
+    'waterabsorb':   'WATER',
+    'stormdrain':    'WATER',
+    'dryskin':       'WATER',
+    'flashfire':     'FIRE',
+    'sapsipper':     'GRASS',
+    'soundproof':    None,   # blocks sound moves — handled separately
+    'bulletproof':   None,   # blocks bullet moves — handled separately
+}
+
+N_IMMUNITY_FLAGS = 10  # one per attacking type that has common immunities
+
+
+def _get_immunity_flags(mon: 'Pokemon') -> np.ndarray:
+    """
+    Compute 10 binary immunity flags for a Pokémon.
+    Order: ground, electric, water, fire, normal, fighting, poison, ghost, psychic, dragon
+    """
+    flags = np.zeros(N_IMMUNITY_FLAGS, dtype=np.float32)
+
+    if mon is None:
+        return flags
+
+    types = [t.name for t in mon.types if t is not None]
+    ability = (mon.ability or '').lower().replace(' ', '').replace('-', '')
+
+    # ground immunity
+    if 'FLYING' in types or ability == 'levitate':
+        flags[0] = 1.0
+    # electric immunity
+    if 'GROUND' in types or ability in ('voltabsorb', 'lightningrod', 'motordrive'):
+        flags[1] = 1.0
+    # water immunity
+    if ability in ('waterabsorb', 'stormdrain', 'dryskin'):
+        flags[2] = 1.0
+    # fire immunity
+    if ability == 'flashfire':
+        flags[3] = 1.0
+    # normal immunity
+    if 'GHOST' in types:
+        flags[4] = 1.0
+    # fighting immunity
+    if 'GHOST' in types:
+        flags[5] = 1.0
+    # poison immunity
+    if 'STEEL' in types or 'POISON' in types:
+        flags[6] = 1.0
+    # ghost immunity
+    if 'NORMAL' in types:
+        flags[7] = 1.0
+    # psychic immunity
+    if 'DARK' in types:
+        flags[8] = 1.0
+    # dragon immunity
+    if 'FAIRY' in types:
+        flags[9] = 1.0
+
+    return flags
+
+def _get_damage_multiplier(move: 'Move', defender: 'Pokemon') -> float:
+    """
+    Get type effectiveness multiplier for a move against a defender.
+    Returns 0.0 if immune, 0.25/0.5 if resisted, 1.0 neutral, 2.0/4.0 if SE.
+    """
+    if move is None or defender is None:
+        return 1.0
+    try:
+        multiplier = defender.damage_multiplier(move)
+        return float(multiplier) / 4.0  # normalize to [0, 1] range (max is 4x)
+    except Exception:
+        return 0.25  # neutral normalized
 
 # ─── Dimension calculation ─────────────────────────────────────────────────────
 #
@@ -218,7 +311,7 @@ ITEM_TO_IDX = {item: i for i, item in enumerate(ITEM_LIST)}
 #   is_spread            : 1   (hits multiple targets: Earthquake, Surf etc.)
 #   priority             : 1
 #   ---------------------
-#   subtotal             : 28
+#   subtotal             : 30
 #
 # Global state:
 #   weather              : 8
@@ -237,8 +330,7 @@ def _encode_pokemon(mon: Optional[Pokemon], is_active: bool) -> np.ndarray:
     """Encode a single Pokémon into a fixed-size float32 vector."""
     item_vec_size = N_ITEMS + 1   # +1 for unknown/no item
     tera_vec_size = N_TYPES + 1   # +1 for unknown tera type
-    per_mon_size = 1 + N_TYPES + N_BASE_STATS + N_BOOSTS + N_STATUSES + N_EFFECTS + 1 + 1 + item_vec_size + tera_vec_size + 1
-
+    per_mon_size = 1 + N_TYPES + N_BASE_STATS + N_BOOSTS + N_STATUSES + N_EFFECTS + 1 + 1 + item_vec_size + tera_vec_size + 1 + N_IMMUNITY_FLAGS
     vec = np.zeros(per_mon_size, dtype=np.float32)
 
     if mon is None:
@@ -312,14 +404,23 @@ def _encode_pokemon(mon: Optional[Pokemon], is_active: bool) -> np.ndarray:
     vec[idx] = 1.0 if mon.is_terastallized else 0.0
     idx += 1
 
+    # immunity flags (10)
+    vec[idx:idx + N_IMMUNITY_FLAGS] = _get_immunity_flags(mon)
+    idx += N_IMMUNITY_FLAGS
+
     return vec
 
 
-def _encode_move(move: Optional[Move], is_usable: bool) -> np.ndarray:
+def _encode_move(
+    move: Optional[Move],
+    is_usable: bool,
+    vs_opp1_multiplier: float = 0.25,
+    vs_opp2_multiplier: float = 0.25,
+) -> np.ndarray:
     """Encode a single move into a fixed-size float32 vector."""
     per_move_size = 9 + N_TYPES  # 9 scalars + 18 type flags = 27... wait, see below
     # base_power(1) + accuracy(1) + type(18) + category(3) + is_usable(1) + pp_fraction(1) + makes_contact(1) + is_spread(1) + priority(1) = 28
-    per_move_size = 28
+    per_move_size = 30
     vec = np.zeros(per_move_size, dtype=np.float32)
 
     if move is None:
@@ -370,6 +471,12 @@ def _encode_move(move: Optional[Move], is_usable: bool) -> np.ndarray:
 
     # Priority normalized — range typically [-7, +5], normalize to [-1, 1]
     vec[idx] = move.priority / 7.0
+    idx += 1
+
+    # Damage oracle — type effectiveness vs each opponent (2)
+    vec[idx] = vs_opp1_multiplier
+    idx += 1
+    vec[idx] = vs_opp2_multiplier
     idx += 1
 
     return vec
@@ -446,7 +553,7 @@ def embed_battle(battle: DoubleBattle) -> np.ndarray:
         if mon is None:
             # Empty slot — 4 zero move vectors
             for _ in range(4):
-                parts.append(np.zeros(28, dtype=np.float32))
+                parts.append(np.zeros(30, dtype=np.float32))
             continue
 
         available = battle.available_moves[slot_idx]
@@ -460,9 +567,18 @@ def embed_battle(battle: DoubleBattle) -> np.ndarray:
             known_moves.append(None)
         known_moves = known_moves[:4]
 
+        # Get active opponents for damage oracle
+        opp1 = battle.opponent_active_pokemon[0]
+        opp2 = battle.opponent_active_pokemon[1]
+
         for move in known_moves:
             is_usable = move is not None and move.id in available_ids
-            parts.append(_encode_move(move, is_usable))
+            if move is not None:
+                vs_opp1 = _get_damage_multiplier(move, opp1)
+                vs_opp2 = _get_damage_multiplier(move, opp2)
+            else:
+                vs_opp1 = vs_opp2 = 0.25
+            parts.append(_encode_move(move, is_usable, vs_opp1, vs_opp2))
 
     # ── Global battle state ───────────────────────────────────────────────────
     global_vec = np.zeros(N_WEATHERS + N_TERRAINS + N_FIELDS + 2 * N_SIDE_CONDITIONS + 1, dtype=np.float32)
@@ -507,16 +623,15 @@ def embed_battle(battle: DoubleBattle) -> np.ndarray:
 
 def get_observation_size(n_items: int = N_ITEMS) -> int:
     """Returns the total size of the observation vector."""
-    per_mon = 1 + N_TYPES + N_BASE_STATS + N_BOOSTS + N_STATUSES + N_EFFECTS + 1 + 1 + (n_items + 1) + (N_TYPES + 1) + 1
-    per_move = 28
+    per_mon = 1 + N_TYPES + N_BASE_STATS + N_BOOSTS + N_STATUSES + N_EFFECTS + 1 + 1 + (n_items + 1) + (N_TYPES + 1) + 1 + N_IMMUNITY_FLAGS
+    per_move = 30
     global_state = N_WEATHERS + N_TERRAINS + N_FIELDS + 2 * N_SIDE_CONDITIONS + 1
     return 12 * per_mon + 8 * per_move + global_state
 
-
 if __name__ == "__main__":
     print(f"Observation vector size: {get_observation_size()}")
-    print(f"  Per pokemon:    {1 + N_TYPES + N_BASE_STATS + N_BOOSTS + N_STATUSES + N_EFFECTS + 1 + 1 + (N_ITEMS+1) + (N_TYPES+1) + 1}")
-    print(f"  Per move:       28")
-    print(f"  12 pokemon:     {12 * (1 + N_TYPES + N_BASE_STATS + N_BOOSTS + N_STATUSES + N_EFFECTS + 1 + 1 + (N_ITEMS+1) + (N_TYPES+1) + 1)}")
-    print(f"  8 move slots:   {8 * 28}")
+    print(f"  Per pokemon:    {1 + N_TYPES + N_BASE_STATS + N_BOOSTS + N_STATUSES + N_EFFECTS + 1 + 1 + (N_ITEMS+1) + (N_TYPES+1) + 1 + N_IMMUNITY_FLAGS}")
+    print(f"  Per move:       30")
+    print(f"  12 pokemon:     {12 * (1 + N_TYPES + N_BASE_STATS + N_BOOSTS + N_STATUSES + N_EFFECTS + 1 + 1 + (N_ITEMS+1) + (N_TYPES+1) + 1 + N_IMMUNITY_FLAGS)}")
+    print(f"  8 move slots:   {8 * 30}")
     print(f"  Global state:   {N_WEATHERS + N_TERRAINS + N_FIELDS + 2 * N_SIDE_CONDITIONS + 1}")
