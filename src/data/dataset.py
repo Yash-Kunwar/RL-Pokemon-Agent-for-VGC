@@ -462,14 +462,6 @@ def embed_turn_state(
     state: TurnState,
     perspective: str,  # 'p1' or 'p2'
 ) -> np.ndarray:
-    """
-    Convert a TurnState into the same 2923-dim observation vector
-    as embed_battle() in observation.py.
-
-    perspective: which player's POV to encode from.
-    For opponent pokemon, items/abilities are hidden to simulate
-    real battle partial observability.
-    """
     parts = []
 
     our_team = state.p1_team if perspective == 'p1' else state.p2_team
@@ -492,16 +484,16 @@ def embed_turn_state(
     for mon_state in bench_slots:
         parts.append(_encode_parsed_pokemon(mon_state, is_active=False, hide_item=False))
 
-    # ── Opponent active slots (2) — hide items ────────────────────────────────
+    # ── Opponent active slots (2) ─────────────────────────────────────────────
     for species in opp_active:
         mon_state = opp_team.get(species) if species else None
         parts.append(_encode_parsed_pokemon(
             mon_state, is_active=True,
-            hide_item=True,    # simulate partial observability
+            hide_item=True,
             hide_ability=True,
         ))
 
-    # ── Opponent bench slots (4) — hide items ─────────────────────────────────
+    # ── Opponent bench slots (4) ──────────────────────────────────────────────
     opp_active_set = set(s for s in opp_active if s is not None)
     opp_bench = [m for m in opp_team.values() if m.species not in opp_active_set and not m.fainted]
     opp_fainted = [m for m in opp_team.values() if m.fainted]
@@ -520,7 +512,7 @@ def embed_turn_state(
         mon_state = our_team.get(species) if species else None
         if mon_state is None:
             for _ in range(4):
-                parts.append(np.zeros(28, dtype=np.float32))
+                parts.append(np.zeros(30, dtype=np.float32))
             continue
 
         known_moves = mon_state.moves[:4]
@@ -535,7 +527,6 @@ def embed_turn_state(
 
     obs = np.concatenate(parts, axis=0)
     return obs
-
 
 # ─── PyTorch Dataset ───────────────────────────────────────────────────────────
 
