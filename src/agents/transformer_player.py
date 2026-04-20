@@ -97,9 +97,9 @@ class TransformerPlayer(Player):
 
         except Exception as e:
             # Fallback to random on any error — log it
-            self._logger.error(f"TransformerPlayer error on turn {battle.turn}: {e}")
+            self.logger.error(f"TransformerPlayer error on turn {battle.turn}: {e}")
             import traceback
-            self._logger.error(traceback.format_exc())
+            self.logger.error(traceback.format_exc())
             return self.choose_random_doubles_move(battle)
 
     def _select_action(

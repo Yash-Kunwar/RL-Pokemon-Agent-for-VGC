@@ -3,6 +3,7 @@ import torch
 from typing import List, Optional, Tuple
 from poke_env.battle.double_battle import DoubleBattle
 from poke_env.battle.move import Move
+from poke_env.battle.target import Target
 from poke_env.battle.pokemon import Pokemon
 from poke_env.player.battle_order import (
     DoubleBattleOrder,
@@ -199,6 +200,9 @@ def get_action_mask(battle: DoubleBattle, slot: int) -> np.ndarray:
     if mask.sum() == 0:
         mask[PASS_ACTION] = 1.0
 
+    # Safety — should never happen but guarantee at least one valid action
+    assert mask.sum() > 0, f"Empty action mask for slot {slot}"
+
     return mask
 
 
@@ -231,14 +235,6 @@ def action_to_order(
 ) -> SingleBattleOrder:
     """
     Convert an action index (0-17) into a SingleBattleOrder for one slot.
-
-    Args:
-        action: integer action index
-        battle: current DoubleBattle
-        slot:   0 or 1
-
-    Returns:
-        SingleBattleOrder for this slot
     """
     mon = battle.active_pokemon[slot]
 
@@ -254,36 +250,99 @@ def action_to_order(
     if action >= SWITCH_ACTION_START:
         bench_slot = action - SWITCH_ACTION_START
         bench = _get_bench_pokemon(battle)
-        target_mon = bench[bench_slot]
-        if target_mon is not None:
-            return SingleBattleOrder(target_mon)
+        if bench_slot < len(bench) and bench[bench_slot] is not None:
+            target_mon = bench[bench_slot]
+            # Verify it's actually in available switches
+            available = battle.available_switches[slot]
+            if target_mon in available:
+                return SingleBattleOrder(target_mon)
+        # Fallback — pick first available switch
+        available = battle.available_switches[slot]
+        if available:
+            return SingleBattleOrder(available[0])
         return PassBattleOrder()
 
     # Move action
     move_slot, target_idx = MOVE_ACTION_MAP[action]
+
+    # Get move from known moves
     known_moves = list(mon.moves.values())[:4]
     while len(known_moves) < 4:
         known_moves.append(None)
 
-    move = known_moves[move_slot] if move_slot < len(known_moves) else None
-    if move is None:
+    if move_slot >= len(known_moves) or known_moves[move_slot] is None:
         return DefaultBattleOrder()
 
-    # Resolve target position
-    if target_idx == 0:
-        target = OPP1
-    elif target_idx == 1:
-        target = OPP2
-    else:
-        # Ally/self target
-        valid_targets = battle.get_possible_showdown_targets(move, mon)
-        ally_targets = [t for t in valid_targets if t in ALLY_POSITIONS]
-        if ally_targets:
-            target = ally_targets[0]
-        else:
-            target = EMPTY_TARGET
+    move = known_moves[move_slot]
 
-    return SingleBattleOrder(move, move_target=target)
+    # Verify move is in available moves for this slot
+    available_moves = battle.available_moves[slot]
+    available_ids = {m.id for m in available_moves}
+    if move.id not in available_ids:
+        # Move not available — pick best available move instead
+        if available_moves:
+            move = available_moves[0]
+        else:
+            return DefaultBattleOrder()
+
+    # ── Resolve target ────────────────────────────────────────────────────────
+    # Get valid targets from showdown
+    try:
+        valid_targets = battle.get_possible_showdown_targets(move, mon)
+    except Exception:
+        valid_targets = [EMPTY_TARGET]
+
+    # Categorize valid targets
+    opp_targets = [t for t in valid_targets if t in OPP_POSITIONS]
+    ally_targets = [t for t in valid_targets if t in ALLY_POSITIONS]
+    self_targets = [t for t in valid_targets if t == EMPTY_TARGET]
+
+    # Self-targeting moves (SELF, ALLY_SIDE, ALLY_TEAM etc.)
+    # These should NEVER target opponents
+    SELF_TARGET_TYPES = {
+        Target.SELF,
+        Target.ALLY_SIDE,
+        Target.ALLY_TEAM,
+        Target.ALLIES,
+    }
+    if move.target in SELF_TARGET_TYPES:
+        return SingleBattleOrder(move, move_target=EMPTY_TARGET)
+
+    # For normal targeting moves resolve based on target_idx
+    if target_idx == 0:
+        # opp1
+        if OPP1 in valid_targets:
+            return SingleBattleOrder(move, move_target=OPP1)
+        elif OPP2 in valid_targets:
+            return SingleBattleOrder(move, move_target=OPP2)
+        elif self_targets:
+            return SingleBattleOrder(move, move_target=EMPTY_TARGET)
+
+    elif target_idx == 1:
+        # opp2
+        if OPP2 in valid_targets:
+            return SingleBattleOrder(move, move_target=OPP2)
+        elif OPP1 in valid_targets:
+            return SingleBattleOrder(move, move_target=OPP1)
+        elif self_targets:
+            return SingleBattleOrder(move, move_target=EMPTY_TARGET)
+
+    elif target_idx == 2:
+        # ally/self
+        if ally_targets:
+            return SingleBattleOrder(move, move_target=ally_targets[0])
+        elif self_targets:
+            return SingleBattleOrder(move, move_target=EMPTY_TARGET)
+        elif opp_targets:
+            # Fallback to opponent if no ally target available
+            return SingleBattleOrder(move, move_target=opp_targets[0])
+
+    # Final fallback — use first valid target
+    if valid_targets:
+        target = valid_targets[0]
+        return SingleBattleOrder(move, move_target=target)
+
+    return DefaultBattleOrder()
 
 
 def actions_to_double_order(
