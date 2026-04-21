@@ -58,6 +58,9 @@ class PPOConfig:
     # BC checkpoint to start from
     BC_CHECKPOINT = 'bc_best.pt'
 
+    RESUME_FROM = None  # set to checkpoint path to resume
+
+
 
 # ─── Opponent Pool ────────────────────────────────────────────────────────────
 
@@ -127,11 +130,29 @@ class PPOTrainer:
         self.opponent_pool.add(self.model.state_dict())
 
         # ── Training state ────────────────────────────────────────────────────
-        # ── Training state ────────────────────────────────────────────────────
         self.update_count = 0
         self.total_steps = 0
         self.history = []
         self.best_win_rate = 0.0
+
+        # ── Resume from checkpoint if specified ───────────────────────────────
+        if config.RESUME_FROM and os.path.exists(config.RESUME_FROM):
+            print(f"Resuming from: {config.RESUME_FROM}")
+            rl_ckpt = torch.load(config.RESUME_FROM, map_location=self.device)
+            self.model.load_state_dict(rl_ckpt['model_state_dict'])
+            self.updater.optimizer.load_state_dict(rl_ckpt['optimizer_state_dict'])
+            self.update_count = rl_ckpt['update']
+            self.total_steps = rl_ckpt['total_steps']
+            self.history = rl_ckpt.get('history', [])
+            self.best_win_rate = max(
+                (e.get('eval', {}) or {}).get('vs_random', 0)
+                for e in self.history
+            ) if self.history else 0.0
+            print(f"  Resumed from update {self.update_count}, "
+                  f"steps={self.total_steps:,}, "
+                  f"best_win_rate={self.best_win_rate:.1%}")
+            # Seed opponent pool with resumed weights
+            self.opponent_pool.add(self.model.state_dict())
 
         # ── Create persistent players (avoids challenge loop issues) ──────────
         self.ppo_player = PPOPlayer(
@@ -293,7 +314,9 @@ class PPOTrainer:
         print(f"Dense reward decay over {self.config.DENSE_REWARD_DECAY_STEPS} updates")
         print()
 
-        for update in range(1, self.config.TOTAL_UPDATES + 1):
+        start_update = self.update_count + 1
+        end_update = self.update_count + self.config.TOTAL_UPDATES + 1
+        for update in range(start_update, end_update):
             self.update_count = update
             update_start = time.time()
 
