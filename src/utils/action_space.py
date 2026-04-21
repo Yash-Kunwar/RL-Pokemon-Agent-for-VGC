@@ -126,7 +126,7 @@ def get_action_mask(battle: DoubleBattle, slot: int) -> np.ndarray:
         and not battle.opponent_active_pokemon[1].fainted
     )
 
-    # Get ally (the other active slot)
+    # Get ally
     ally_slot = 1 - slot
     ally = battle.active_pokemon[ally_slot]
     ally_alive = ally is not None and not ally.fainted
@@ -144,29 +144,28 @@ def get_action_mask(battle: DoubleBattle, slot: int) -> np.ndarray:
         opp1_mon = battle.opponent_active_pokemon[0]
         opp2_mon = battle.opponent_active_pokemon[1]
 
-        opp1_multiplier = 0.0
-        opp2_multiplier = 0.0
+        opp1_multiplier = 1.0
+        opp2_multiplier = 1.0
         try:
-            if opp1_mon and not opp1_mon.fainted:
+            if opp1_mon and not opp1_mon.fainted and move.base_power > 0:
                 opp1_multiplier = float(opp1_mon.damage_multiplier(move))
         except Exception:
             opp1_multiplier = 1.0
         try:
-            if opp2_mon and not opp2_mon.fainted:
+            if opp2_mon and not opp2_mon.fainted and move.base_power > 0:
                 opp2_multiplier = float(opp2_mon.damage_multiplier(move))
         except Exception:
             opp2_multiplier = 1.0
 
-        # opp1 target — only if not immune and target is valid
+        # opp1 target
         if OPP1 in valid_targets and opp1_alive and opp1_multiplier > 0.0:
             mask[move_slot * N_TARGETS + 0] = 1.0
 
-        # opp2 target — only if not immune and target is valid
+        # opp2 target
         if OPP2 in valid_targets and opp2_alive and opp2_multiplier > 0.0:
             mask[move_slot * N_TARGETS + 1] = 1.0
 
-        # ally/self target — only allow for genuinely ally-targeting moves
-        # NORMAL and ANY moves should never target allies intentionally
+        # ally/self target
         from poke_env.battle.target import Target
         ALLY_ONLY_TARGETS = {
             Target.ADJACENT_ALLY,
@@ -184,7 +183,7 @@ def get_action_mask(battle: DoubleBattle, slot: int) -> np.ndarray:
         elif self_target_valid:
             mask[move_slot * N_TARGETS + 2] = 1.0
 
-    # Switch actions — not available if trapped
+    # Switch actions
     if not is_trapped:
         switches = battle.available_switches[slot]
         bench = _get_bench_pokemon(battle)
@@ -192,16 +191,25 @@ def get_action_mask(battle: DoubleBattle, slot: int) -> np.ndarray:
             if bench_mon is not None and bench_mon in switches:
                 mask[SWITCH_ACTION_START + i] = 1.0
 
-    # Struggle — valid when no moves available but can still act
+    # Struggle
     if not available_moves and not switches:
         mask[STRUGGLE_ACTION] = 1.0
 
-    # Pass — if nothing else is valid
+    # Fallback — if no move targets found but moves exist, allow basic targeting
+    move_actions_valid = mask[:SWITCH_ACTION_START].sum() > 0
+    if not move_actions_valid and available_moves:
+        for move_slot, move in enumerate(known_moves):
+            if move is None:
+                continue
+            if move.id not in available_move_ids:
+                continue
+            mask[move_slot * N_TARGETS + 0] = 1.0
+            if opp2_alive:
+                mask[move_slot * N_TARGETS + 1] = 1.0
+
+    # Pass only if truly nothing valid
     if mask.sum() == 0:
         mask[PASS_ACTION] = 1.0
-
-    # Safety — should never happen but guarantee at least one valid action
-    assert mask.sum() > 0, f"Empty action mask for slot {slot}"
 
     return mask
 
